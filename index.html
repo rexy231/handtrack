@@ -40,9 +40,7 @@ const hold = [0, 0], trails = [[], []], ps = [];
 
 function size(){
   W = innerWidth; H = innerHeight;
-  for(const c of [cv, bgC, lc]){ c.width = W; c.height = H; }
-  bgOK = false;
-  if(phase === 'live'){ phase = 'idle'; target = 0; vanish = 0; btn.style.display = 'block'; }
+  for(const c of [cv, lc]){ c.width = W; c.height = H; }
 }
 size();
 addEventListener('resize', size);
@@ -91,7 +89,7 @@ function runSeg(t){
 btn.onclick = () => {
   if(phase === 'load') return;
   phase = 'count'; countEnd = performance.now() + 5000;
-  target = 0; vanish = 0; hasMask = false;
+  target = 0; vanish = 0; hasMask = false; bgOK = false;
   btn.style.display = 'none';
 };
 
@@ -116,7 +114,8 @@ function loop(){
     const p = vanish * vanish * (3 - 2 * vanish);
 
     if(phase === 'count' && now >= countEnd){
-      bgx.drawImage(v, c[0], c[1], c[2], c[3], 0, 0, W, H);
+      bgC.width = vw; bgC.height = vh;
+      bgx.drawImage(v, 0, 0);
       inv = lastMean > 0.5; bgOK = true; hasMask = false; phase = 'live';
       btn.textContent = '🔄 Background dobara lo'; btn.style.display = 'block';
     }
@@ -126,7 +125,7 @@ function loop(){
     x.save(); x.translate(W, 0); x.scale(-1, 1);
     x.drawImage(v, c[0], c[1], c[2], c[3], 0, 0, W, H);
     if(vanish > 0.001 && bgOK && hasMask){
-      lx.globalCompositeOperation = 'copy'; lx.drawImage(bgC, 0, 0);
+      lx.globalCompositeOperation = 'copy'; lx.drawImage(bgC, c[0], c[1], c[2], c[3], 0, 0, W, H);
       lx.globalCompositeOperation = 'destination-in';
       const mcr = crop(mw, mh);
       lx.drawImage(maskC, mcr[0], mcr[1], mcr[2], mcr[3], 0, 0, W, H);
