@@ -7,8 +7,9 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:monos
 video{position:fixed;left:0;top:0;width:2px;height:2px;opacity:.01;pointer-events:none}
 canvas{position:fixed;inset:0;width:100vw;height:100vh}
 #scan{position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,255,255,.06) 0 1px,transparent 1px 4px),radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.7))}
-#top{position:fixed;top:12px;left:0;right:0;text-align:center;color:#0ff;font-size:18px;letter-spacing:4px;text-shadow:0 0 10px #0ff}
-#st{position:fixed;bottom:18px;left:0;right:0;text-align:center;color:#fff;font-size:19px;text-shadow:0 0 10px #0ff;padding:0 20px}
+#top{position:fixed;top:12px;left:0;right:0;text-align:center;color:#0ff;font-size:18px;letter-spacing:4px;text-shadow:0 0 10px #0ff;pointer-events:none}
+#dbg{position:fixed;top:44px;left:16px;color:#9ff;font-size:13px;text-shadow:0 0 6px #000;pointer-events:none}
+#st{position:fixed;bottom:18px;left:0;right:0;text-align:center;color:#fff;font-size:19px;text-shadow:0 0 10px #0ff;padding:0 20px;pointer-events:none}
 #big{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:110px;text-shadow:0 0 30px #0ff;pointer-events:none}
 #btn{position:fixed;bottom:70px;left:50%;transform:translateX(-50%);z-index:9;padding:14px 30px;font:bold 20px monospace;color:#fff;background:rgba(0,255,255,.18);border:2px solid #0ff;border-radius:30px;display:none}
 </style>
@@ -18,6 +19,7 @@ canvas{position:fixed;inset:0;width:100vw;height:100vh}
 <canvas id="cv"></canvas>
 <div id="scan"></div>
 <div id="top">JARVIS // GESTURE CLOAK</div>
+<div id="dbg"></div>
 <div id="big"></div>
 <div id="st">Models load ho rahe hain... (10-15 sec)</div>
 <button id="btn">🎬 START</button>
@@ -36,6 +38,7 @@ let bgOK = false, hasMask = false, inv = false, lastMean = 0;
 let mw = 0, mh = 0, img = null;
 let target = 0, vanish = 0, countEnd = 0, flash = 0;
 let hue = 185, fc = 0, last = performance.now();
+let segRuns = 0, tries = 0, warn = '';
 const hold = [0, 0], trails = [[], []], ps = [];
 
 function size(){
@@ -54,8 +57,8 @@ const say = t => { if($('st').textContent !== t) $('st').textContent = t; };
 
 function gesture(l){
   const w = l[0], hs = d(w, l[9]);
-  if(d(l[4], l[8]) < hs * 0.35) return "pinch";
-  const e = [[8,6],[12,10],[16,14],[20,18]].map(([t,p]) => d(l[t], w) > d(l[p], w) * 1.1);
+  if(d(l[4], l[8]) < hs * 0.3) return "pinch";
+  const e = [[8,6],[12,10],[16,14],[20,18]].map(([t,p]) => d(l[t], w) > d(l[p], w) * 1.05);
   const n = e.filter(Boolean).length;
   if(n === 0) return "fist";
   if(n === 4) return "palm";
@@ -81,15 +84,24 @@ function runSeg(t){
       dd[i*4+3] = p < 0 ? 0 : p > 1 ? 255 : p * 255;
     }
     lastMean = s / n;
+    segRuns++;
     mc.putImageData(img, 0, 0);
     hasMask = true;
   });
 }
 
+function toggle(){
+  if(phase !== 'live') return;
+  if(!(vanish <= 0.001 || vanish >= 0.999)) return;
+  target = 1 - target; flash = 1;
+}
+cv.onclick = toggle;
+
 btn.onclick = () => {
   if(phase === 'load') return;
   phase = 'count'; countEnd = performance.now() + 5000;
   target = 0; vanish = 0; hasMask = false; bgOK = false;
+  segRuns = 0; tries = 0; warn = '';
   btn.style.display = 'none';
 };
 
@@ -114,12 +126,18 @@ function loop(){
     const p = vanish * vanish * (3 - 2 * vanish);
 
     if(phase === 'count' && now >= countEnd){
-      bgC.width = vw; bgC.height = vh;
-      bgx.drawImage(v, 0, 0);
-      inv = lastMean > 0.5; bgOK = true; hasMask = false; phase = 'live';
-      btn.textContent = '🔄 Background dobara lo'; btn.style.display = 'block';
+      const person = lastMean > 0.5 ? 1 - lastMean : lastMean;
+      if(person > 0.04 && segRuns > 0 && tries < 2){
+        tries++; countEnd = now + 5000;
+        warn = 'Background me aap dikh rahe ho! Poora frame se hat jao';
+      } else {
+        bgC.width = vw; bgC.height = vh;
+        bgx.drawImage(v, 0, 0);
+        inv = lastMean > 0.5; bgOK = true; hasMask = false; phase = 'live'; warn = '';
+        btn.textContent = '🔄 Background dobara lo'; btn.style.display = 'block';
+      }
     }
-    if((phase === 'count' || target || vanish > 0) && fc % 3 === 0) runSeg(now);
+    if((phase === 'count' || target || vanish > 0) && fc % 2 === 0) runSeg(now);
 
     // ---- video + cloak ----
     x.save(); x.translate(W, 0); x.scale(-1, 1);
@@ -146,10 +164,12 @@ function loop(){
     if(flash > 0){ x.fillStyle = `rgba(255,255,255,${flash*.35})`; x.fillRect(0, 0, W, H); flash -= dt * 3; }
 
     // ---- hands ----
+    const gl = [];
     const hands = (phase === 'load' ? [] : hl.detectForVideo(v, now).landmarks);
     hands.forEach((l, i) => {
       if(i > 1) return;
       const P = l.map(toS), g = gesture(l);
+      gl.push(g);
       const tr = trails[i]; tr.push(P[8]); if(tr.length > 16) tr.shift();
       x.lineCap = 'round';
       for(let j = 1; j < tr.length; j++){
@@ -179,8 +199,8 @@ function loop(){
         if(!allowed) hold[i] = 0;
         else {
           if(hold[i] === 0) hold[i] = now;
-          prog = Math.min(1, (now - hold[i]) / 500);
-          if(prog >= 1){ target = 1 - target; flash = 1; hold[i] = -1; }
+          prog = Math.min(1, (now - hold[i]) / 400);
+          if(prog >= 1){ toggle(); hold[i] = -1; }
         }
       }
       if(prog > 0){
@@ -209,13 +229,14 @@ function loop(){
     });
 
     $('top').textContent = 'JARVIS // GESTURE CLOAK  [' + (target ? 'CLOAKED' : 'VISIBLE') + ']';
+    $('dbg').textContent = `haath: ${gl.join(',') || 'nahi dikh raha'} | mask: ${hasMask ? 'haan' : 'nahi'} (${lastMean.toFixed(2)}) | bg: ${bgOK ? 'ok' : 'nahi'} | inv: ${inv}`;
     if(phase === 'idle') say('START dabao, phir camera ke frame se hat jao');
     else if(phase === 'count'){
-      say('FRAME SE HAT JAO! Background capture ho raha hai');
+      say(warn || 'FRAME SE HAT JAO! Background capture ho raha hai');
       $('big').textContent = Math.max(1, Math.ceil((countEnd - now) / 1000));
     } else if(phase === 'live'){
       $('big').textContent = '';
-      say(target ? '✌️ Peace sign rokke WAPAS aao' : '✌️ Peace sign 0.5 sec rokke GAYAB ho jao');
+      say(target ? '✌️ Peace sign rokke (ya screen tap karo) WAPAS aao' : '✌️ Peace sign 0.4 sec rokke (ya screen tap karo) GAYAB ho jao');
     }
   } catch(e){
     $('st').textContent = 'Error: ' + e.message; return;
