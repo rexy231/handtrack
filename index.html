@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{margin:0;background:#000;overflow:hidden}
+video,canvas{position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;transform:scaleX(-1)}
+#msg{position:fixed;top:8px;left:8px;color:#0ff;font:16px monospace;z-index:5}
+</style>
+</head>
+<body>
+<div id="msg">Loading...</div>
+<video id="v" autoplay playsinline muted></video>
+<canvas id="c"></canvas>
+<script type="module">
+import {HandLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const msg = document.getElementById('msg');
+const v = document.getElementById('v');
+const c = document.getElementById('c');
+const x = c.getContext('2d');
+
+const fs = await FilesetResolver.forVisionTasks(
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+const hl = await HandLandmarker.createFromOptions(fs, {
+  baseOptions: {
+    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+    delegate: "GPU"
+  },
+  runningMode: "VIDEO",
+  numHands: 1
+});
+
+v.srcObject = await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+await v.play();
+c.width = v.videoWidth;
+c.height = v.videoHeight;
+msg.textContent = "Pinch karke circle ko pakdo";
+
+const ball = {x: c.width/2, y: c.height/2, r: 50};
+let grabbing = false;
+
+function loop(){
+  x.clearRect(0, 0, c.width, c.height);
+  const res = hl.detectForVideo(v, performance.now());
+
+  if(res.landmarks.length){
+    const l = res.landmarks[0];
+    x.fillStyle = "#0ff";
+    for(const p of l){
+      x.beginPath();
+      x.arc(p.x*c.width, p.y*c.height, 5, 0, 7);
+      x.fill();
+    }
+    const t = l[4], i = l[8], w = l[0], m = l[9];
+    const handSize = Math.hypot(w.x-m.x, w.y-m.y);
+    const pinch = Math.hypot(t.x-i.x, t.y-i.y) < handSize*0.35;
+    const px = (t.x+i.x)/2*c.width, py = (t.y+i.y)/2*c.height;
+
+    if(pinch && (grabbing || Math.hypot(px-ball.x, py-ball.y) < ball.r*2)){
+      grabbing = true;
+      ball.x = px; ball.y = py;
+    } else if(!pinch){
+      grabbing = false;
+    }
+  } else {
+    grabbing = false;
+  }
+
+  x.beginPath();
+  x.arc(ball.x, ball.y, ball.r, 0, 7);
+  x.fillStyle = grabbing ? "#ff3b6b" : "#00e5ff";
+  x.fill();
+
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
