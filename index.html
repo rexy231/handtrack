@@ -3,23 +3,80 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body{margin:0;background:#000;overflow:hidden}
-video,canvas{position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;transform:scaleX(-1)}
-#msg{position:fixed;top:8px;left:8px;color:#0ff;font:16px monospace;z-index:5}
+html,body{margin:0;height:100%;background:#000;overflow:hidden}
+video,canvas{position:fixed;inset:0;width:100vw;height:100vh;transform:scaleX(-1)}
+video{object-fit:cover}
+#msg{position:fixed;top:8px;left:8px;color:#0ff;font:18px monospace;z-index:5;text-shadow:0 0 6px #000}
 </style>
 </head>
 <body>
-<div id="msg">Loading...</div>
+<div id="msg">Loading... (10 sec lag sakte hain)</div>
 <video id="v" autoplay playsinline muted></video>
-<canvas id="c"></canvas>
+<canvas id="gl"></canvas>
+<canvas id="ov"></canvas>
 <script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
 import {HandLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const msg = document.getElementById('msg');
 const v = document.getElementById('v');
-const c = document.getElementById('c');
-const x = c.getContext('2d');
+const ov = document.getElementById('ov');
+const ox2 = ov.getContext('2d');
 
+// ---------- Three.js setup ----------
+let W = innerWidth, H = innerHeight;
+const renderer = new THREE.WebGLRenderer({canvas: document.getElementById('gl'), alpha: true, antialias: true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(W, H);
+const scene = new THREE.Scene();
+const cam = new THREE.OrthographicCamera(0, W, 0, -H, -1000, 1000);
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(300, 400, 800);
+scene.add(sun);
+
+function resize(){
+  W = innerWidth; H = innerHeight;
+  renderer.setSize(W, H);
+  cam.right = W; cam.bottom = -H; cam.updateProjectionMatrix();
+  ov.width = W; ov.height = H;
+}
+addEventListener('resize', resize);
+resize();
+
+const geoms = [
+  new THREE.BoxGeometry(2, 2, 2),
+  new THREE.SphereGeometry(1.2, 32, 32),
+  new THREE.ConeGeometry(1.1, 2.2, 32),
+  new THREE.TorusGeometry(1, 0.42, 16, 48),
+  new THREE.OctahedronGeometry(1.4),
+  new THREE.TorusKnotGeometry(0.8, 0.28, 100, 16)
+];
+
+let objs = [];
+function addObj(px, py, type, hue){
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color().setHSL(hue/360, 0.9, 0.55),
+    metalness: 0.3, roughness: 0.35
+  });
+  const m = new THREE.Mesh(geoms[type % geoms.length], mat);
+  m.position.set(px, -py, 0);
+  m.userData.s = 70;
+  m.scale.setScalar(70);
+  m.rotation.set(0.5, 0.5, 0);
+  scene.add(m);
+  objs.push(m);
+}
+function resetObjs(){
+  objs.forEach(o => { scene.remove(o); o.material.dispose(); });
+  objs = [];
+  addObj(W*0.25, H/2, 0, 0);
+  addObj(W*0.5, H/2, 1, 200);
+  addObj(W*0.75, H/2, 3, 300);
+}
+resetObjs();
+
+// ---------- MediaPipe setup ----------
 const fs = await FilesetResolver.forVisionTasks(
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
 const hl = await HandLandmarker.createFromOptions(fs, {
@@ -28,50 +85,132 @@ const hl = await HandLandmarker.createFromOptions(fs, {
     delegate: "GPU"
   },
   runningMode: "VIDEO",
-  numHands: 1
+  numHands: 2
 });
-
-v.srcObject = await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+v.srcObject = await navigator.mediaDevices.getUserMedia({video: {facingMode: "user"}});
 await v.play();
-c.width = v.videoWidth;
-c.height = v.videoHeight;
-msg.textContent = "Pinch karke circle ko pakdo";
 
-const ball = {x: c.width/2, y: c.height/2, r: 50};
-let grabbing = false;
+// ---------- helpers ----------
+const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
+function gesture(l){
+  const w = l[0];
+  const hs = d(w, l[9]);
+  if(d(l[4], l[8]) < hs * 0.35) return "pinch";
+  const ext = [[8,6],[12,10],[16,14],[20,18]].map(([t,p]) => d(l[t], w) > d(l[p], w) * 1.1);
+  const n = ext.filter(Boolean).length;
+  if(n === 0) return "fist";
+  if(n === 4) return "palm";
+  if(ext[0] && !ext[1] && !ext[2] && !ext[3]) return "point";
+  if(ext[0] && ext[1] && !ext[2] && !ext[3]) return "peace";
+  return "other";
+}
+
+const held = [null, null];
+const prev = [null, null];
+let lastAdd = 0;
+let typeCount = 3;
+const names = {pinch:"🤏 Pakdo", point:"☝️ Rotate", peace:"✌️ Naya object", palm:"✋ Spin", fist:"✊ Reset", other:"..."};
+
+// ---------- main loop ----------
 function loop(){
-  x.clearRect(0, 0, c.width, c.height);
+  const vw = v.videoWidth, vh = v.videoHeight;
+  const sc = Math.max(W / vw, H / vh);
+  const dw = vw * sc, dh = vh * sc;
+  const offX = (dw - W) / 2, offY = (dh - H) / 2;
+  const toS = p => ({x: p.x * dw - offX, y: p.y * dh - offY});
+
+  ox2.clearRect(0, 0, W, H);
   const res = hl.detectForVideo(v, performance.now());
+  const pinchPts = [null, null];
+  const gs = [];
+  let anyPalm = false;
 
-  if(res.landmarks.length){
-    const l = res.landmarks[0];
-    x.fillStyle = "#0ff";
+  res.landmarks.forEach((l, h) => {
+    if(h > 1) return;
+    ox2.fillStyle = "#0ff";
     for(const p of l){
-      x.beginPath();
-      x.arc(p.x*c.width, p.y*c.height, 5, 0, 7);
-      x.fill();
+      const s = toS(p);
+      ox2.beginPath(); ox2.arc(s.x, s.y, 4, 0, 7); ox2.fill();
     }
-    const t = l[4], i = l[8], w = l[0], m = l[9];
-    const handSize = Math.hypot(w.x-m.x, w.y-m.y);
-    const pinch = Math.hypot(t.x-i.x, t.y-i.y) < handSize*0.35;
-    const px = (t.x+i.x)/2*c.width, py = (t.y+i.y)/2*c.height;
+    const g = gesture(l);
+    gs.push(g);
+    const tip = toS(l[8]);
+    const a = toS(l[4]), b = toS(l[8]);
+    const pp = {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2};
 
-    if(pinch && (grabbing || Math.hypot(px-ball.x, py-ball.y) < ball.r*2)){
-      grabbing = true;
-      ball.x = px; ball.y = py;
-    } else if(!pinch){
-      grabbing = false;
+    if(g === "pinch"){
+      pinchPts[h] = pp;
+      if(!held[h]){
+        let best = null, bd = 1e9;
+        for(const o of objs){
+          if(held.includes(o)) continue;
+          const dist = Math.hypot(pp.x - o.position.x, pp.y + o.position.y);
+          if(dist < o.userData.s * 2 && dist < bd){ best = o; bd = dist; }
+        }
+        held[h] = best;
+      }
+      const o = held[h];
+      if(o){
+        if(prev[h]){
+          o.rotation.y += (pp.x - prev[h].x) * 0.01;
+          o.rotation.x += (pp.y - prev[h].y) * 0.01;
+        }
+        o.position.set(pp.x, -pp.y, 0);
+      }
+      prev[h] = pp;
+    } else {
+      held[h] = null;
+      if(g === "point"){
+        if(prev[h]){
+          for(const o of objs){
+            if(Math.hypot(tip.x - o.position.x, tip.y + o.position.y) < o.userData.s * 2.2){
+              o.rotation.y += (tip.x - prev[h].x) * 0.02;
+              o.rotation.x += (tip.y - prev[h].y) * 0.02;
+            }
+          }
+        }
+        prev[h] = tip;
+        ox2.strokeStyle = "#ff0"; ox2.lineWidth = 3;
+        ox2.beginPath(); ox2.arc(tip.x, tip.y, 14, 0, 7); ox2.stroke();
+      } else {
+        prev[h] = null;
+      }
     }
-  } else {
-    grabbing = false;
+
+    if(g === "palm") anyPalm = true;
+    if(g === "fist") resetObjs();
+    if(g === "peace" && performance.now() - lastAdd > 800 && objs.length < 10){
+      addObj(tip.x, tip.y, typeCount++, Math.random() * 360);
+      lastAdd = performance.now();
+    }
+  });
+
+  for(let h = res.landmarks.length; h < 2; h++){ held[h] = null; prev[h] = null; }
+
+  // dono haath se pinch = scale
+  if(pinchPts[0] && pinchPts[1]){
+    const o = held[0] || held[1];
+    if(o){
+      const dist = Math.hypot(pinchPts[0].x - pinchPts[1].x, pinchPts[0].y - pinchPts[1].y);
+      o.userData.s = Math.max(30, Math.min(300, dist / 2));
+      o.scale.setScalar(o.userData.s);
+    }
   }
 
-  x.beginPath();
-  x.arc(ball.x, ball.y, ball.r, 0, 7);
-  x.fillStyle = grabbing ? "#ff3b6b" : "#00e5ff";
-  x.fill();
+  const t = performance.now() * 0.001;
+  for(const o of objs){
+    if(anyPalm){
+      o.rotation.y += 0.04; o.rotation.x += 0.02;
+      o.material.color.offsetHSL(0.004, 0, 0);
+    } else if(!held.includes(o)){
+      o.rotation.y += 0.004; // halka sa idle rotation
+    }
+    o.material.emissive.setScalar(held.includes(o) ? 0.25 : 0);
+  }
 
+  renderer.render(scene, cam);
+  msg.textContent = gs.length ? gs.map(g => names[g]).join("  |  ") : "Haath dikhao";
   requestAnimationFrame(loop);
 }
 loop();
