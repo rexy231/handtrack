@@ -8,7 +8,7 @@ video{position:fixed;left:0;top:0;width:2px;height:2px;opacity:.01;pointer-event
 canvas{position:fixed;inset:0;width:100vw;height:100vh}
 #scan{position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,255,255,.06) 0 1px,transparent 1px 4px),radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.7))}
 #top{position:fixed;top:12px;left:0;right:0;text-align:center;color:#0ff;font-size:18px;letter-spacing:4px;text-shadow:0 0 10px #0ff;pointer-events:none}
-#dbg{position:fixed;top:44px;left:16px;color:#9ff;font-size:13px;text-shadow:0 0 6px #000;pointer-events:none}
+#info{position:fixed;top:44px;left:16px;color:#9ff;font-size:13px;text-shadow:0 0 6px #000;pointer-events:none}
 #st{position:fixed;bottom:18px;left:0;right:0;text-align:center;color:#fff;font-size:19px;text-shadow:0 0 10px #0ff;padding:0 20px;pointer-events:none}
 #big{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:110px;text-shadow:0 0 30px #0ff;pointer-events:none}
 #btn{position:fixed;bottom:70px;left:50%;transform:translateX(-50%);z-index:9;padding:14px 30px;font:bold 20px monospace;color:#fff;background:rgba(0,255,255,.18);border:2px solid #0ff;border-radius:30px;display:none}
@@ -19,21 +19,28 @@ canvas{position:fixed;inset:0;width:100vw;height:100vh}
 <canvas id="cv"></canvas>
 <div id="scan"></div>
 <div id="top">JARVIS // GESTURE CLOAK</div>
-<div id="dbg"></div>
+<div id="info"></div>
 <div id="big"></div>
 <div id="st">Models load ho rahe hain... (10-15 sec)</div>
 <button id="btn">🎬 START</button>
 <script type="module">
 import {HandLandmarker, ImageSegmenter, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
-const $ = id => document.getElementById(id);
-const cv = $('cv'), x = cv.getContext('2d'), v = $('v'), btn = $('btn');
+const cv = document.getElementById('cv');
+const x = cv.getContext('2d');
+const v = document.getElementById('v');
+const btn = document.getElementById('btn');
+const topEl = document.getElementById('top');
+const infoEl = document.getElementById('info');
+const bigEl = document.getElementById('big');
+const stEl = document.getElementById('st');
+
 const mkc = () => document.createElement('canvas');
 const bgC = mkc(), bgx = bgC.getContext('2d');
 const lc = mkc(), lx = lc.getContext('2d');
 const maskC = mkc(), mc = maskC.getContext('2d');
 
-let W, H, phase = 'load', hl, seg;
+let W = 0, H = 0, phase = 'load', hl = null, seg = null;
 let bgOK = false, hasMask = false, inv = false, lastMean = 0;
 let mw = 0, mh = 0, img = null;
 let target = 0, vanish = 0, countEnd = 0, flash = 0;
@@ -43,22 +50,23 @@ const hold = [0, 0], trails = [[], []], ps = [];
 
 function size(){
   W = innerWidth; H = innerHeight;
-  for(const c of [cv, lc]){ c.width = W; c.height = H; }
+  cv.width = W; cv.height = H;
+  lc.width = W; lc.height = H;
 }
 size();
 addEventListener('resize', size);
 
-const crop = (sw, sh) => {
+function crop(sw, sh){
   const s = Math.max(W / sw, H / sh), cw = W / s, ch = H / s;
   return [(sw - cw) / 2, (sh - ch) / 2, cw, ch];
-};
-const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-const say = t => { if($('st').textContent !== t) $('st').textContent = t; };
+}
+function dist(a, b){ return Math.hypot(a.x - b.x, a.y - b.y); }
+function say(t){ if(stEl.textContent !== t) stEl.textContent = t; }
 
 function gesture(l){
-  const w = l[0], hs = d(w, l[9]);
-  if(d(l[4], l[8]) < hs * 0.3) return "pinch";
-  const e = [[8,6],[12,10],[16,14],[20,18]].map(([t,p]) => d(l[t], w) > d(l[p], w) * 1.05);
+  const w = l[0], hs = dist(w, l[9]);
+  if(dist(l[4], l[8]) < hs * 0.3) return "pinch";
+  const e = [[8,6],[12,10],[16,14],[20,18]].map(function(pr){ return dist(l[pr[0]], w) > dist(l[pr[1]], w) * 1.05; });
   const n = e.filter(Boolean).length;
   if(n === 0) return "fist";
   if(n === 4) return "palm";
@@ -67,7 +75,7 @@ function gesture(l){
 }
 
 function runSeg(t){
-  seg.segmentForVideo(v, t, r => {
+  seg.segmentForVideo(v, t, function(r){
     const ms = r.confidenceMasks;
     if(!ms || !ms.length) return;
     const m = ms[ms.length - 1], a = m.getAsFloat32Array(), n = a.length;
@@ -77,11 +85,13 @@ function runSeg(t){
       img = mc.createImageData(mw, mh);
       img.data.fill(255);
     }
-    const dd = img.data; let s = 0;
+    const dd = img.data;
+    let s = 0;
     for(let i = 0; i < n; i++){
-      const q = a[i]; s += q;
-      let p = ((inv ? 1 - q : q) - 0.4) * 4;
-      dd[i*4+3] = p < 0 ? 0 : p > 1 ? 255 : p * 255;
+      const q = a[i];
+      s += q;
+      const p = ((inv ? 1 - q : q) - 0.4) * 4;
+      dd[i*4+3] = p < 0 ? 0 : (p > 1 ? 255 : p * 255);
     }
     lastMean = s / n;
     segRuns++;
@@ -93,20 +103,24 @@ function runSeg(t){
 function toggle(){
   if(phase !== 'live') return;
   if(!(vanish <= 0.001 || vanish >= 0.999)) return;
-  target = 1 - target; flash = 1;
+  target = 1 - target;
+  flash = 1;
 }
 cv.onclick = toggle;
 
-btn.onclick = () => {
+btn.onclick = function(){
   if(phase === 'load') return;
-  phase = 'count'; countEnd = performance.now() + 5000;
+  phase = 'count';
+  countEnd = performance.now() + 5000;
   target = 0; vanish = 0; hasMask = false; bgOK = false;
   segRuns = 0; tries = 0; warn = '';
   btn.style.display = 'none';
 };
 
 function spark(bxp){
-  for(let k = 0; k < 8; k++) ps.push({x: bxp, y: Math.random()*H, vx: (Math.random()-.5)*4, vy: (Math.random()-.5)*4 - 1, l: 1});
+  for(let k = 0; k < 8; k++){
+    ps.push({x: bxp, y: Math.random()*H, vx: (Math.random()-0.5)*4, vy: (Math.random()-0.5)*4 - 1, l: 1});
+  }
   if(ps.length > 500) ps.splice(0, ps.length - 500);
 }
 
@@ -115,41 +129,48 @@ const TIPS = [4, 8, 12, 16, 20];
 
 function loop(){
   try{
-    const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000);
+    const now = performance.now();
+    const dt = Math.min(0.05, (now - last) / 1000);
     last = now; fc++;
     const vw = v.videoWidth, vh = v.videoHeight, c = crop(vw, vh);
-    const toS = p => [W - ((p.x*vw - c[0]) / c[2] * W), (p.y*vh - c[1]) / c[3] * H];
+    const toS = function(p){ return [W - ((p.x*vw - c[0]) / c[2] * W), (p.y*vh - c[1]) / c[3] * H]; };
 
     hue += ((target ? 290 : 185) - hue) * 0.08;
-    const col = `hsl(${hue},100%,62%)`;
+    const col = 'hsl(' + hue + ',100%,62%)';
     vanish = Math.max(0, Math.min(1, vanish + (target ? 1 : -1) * dt / 1.2));
     const p = vanish * vanish * (3 - 2 * vanish);
 
     if(phase === 'count' && now >= countEnd){
       const person = lastMean > 0.5 ? 1 - lastMean : lastMean;
       if(person > 0.04 && segRuns > 0 && tries < 2){
-        tries++; countEnd = now + 5000;
+        tries++;
+        countEnd = now + 5000;
         warn = 'Background me aap dikh rahe ho! Poora frame se hat jao';
       } else {
         bgC.width = vw; bgC.height = vh;
         bgx.drawImage(v, 0, 0);
         inv = lastMean > 0.5; bgOK = true; hasMask = false; phase = 'live'; warn = '';
-        btn.textContent = '🔄 Background dobara lo'; btn.style.display = 'block';
+        btn.textContent = '🔄 Background dobara lo';
+        btn.style.display = 'block';
       }
     }
     if((phase === 'count' || target || vanish > 0) && fc % 2 === 0) runSeg(now);
 
     // ---- video + cloak ----
-    x.save(); x.translate(W, 0); x.scale(-1, 1);
+    x.save();
+    x.translate(W, 0); x.scale(-1, 1);
     x.drawImage(v, c[0], c[1], c[2], c[3], 0, 0, W, H);
     if(vanish > 0.001 && bgOK && hasMask){
-      lx.globalCompositeOperation = 'copy'; lx.drawImage(bgC, c[0], c[1], c[2], c[3], 0, 0, W, H);
+      lx.globalCompositeOperation = 'copy';
+      lx.drawImage(bgC, c[0], c[1], c[2], c[3], 0, 0, W, H);
       lx.globalCompositeOperation = 'destination-in';
       const mcr = crop(mw, mh);
       lx.drawImage(maskC, mcr[0], mcr[1], mcr[2], mcr[3], 0, 0, W, H);
       lx.globalCompositeOperation = 'source-over';
-      x.save(); x.beginPath(); x.rect(W - W*p, 0, W*p, H); x.clip();
-      x.drawImage(lc, 0, 0); x.restore();
+      x.save();
+      x.beginPath(); x.rect(W - W*p, 0, W*p, H); x.clip();
+      x.drawImage(lc, 0, 0);
+      x.restore();
     }
     x.restore();
 
@@ -157,34 +178,47 @@ function loop(){
     if(vanish > 0.001 && vanish < 0.999){
       const bxp = W * p;
       const g2 = x.createLinearGradient(bxp-30, 0, bxp+30, 0);
-      g2.addColorStop(0, 'transparent'); g2.addColorStop(.5, col); g2.addColorStop(1, 'transparent');
-      x.fillStyle = g2; x.fillRect(bxp-30, 0, 60, H);
+      g2.addColorStop(0, 'rgba(0,255,255,0)');
+      g2.addColorStop(0.5, col);
+      g2.addColorStop(1, 'rgba(0,255,255,0)');
+      x.fillStyle = g2;
+      x.fillRect(bxp-30, 0, 60, H);
       spark(bxp);
     }
-    if(flash > 0){ x.fillStyle = `rgba(255,255,255,${flash*.35})`; x.fillRect(0, 0, W, H); flash -= dt * 3; }
+    if(flash > 0){
+      x.fillStyle = 'rgba(255,255,255,' + (flash*0.35) + ')';
+      x.fillRect(0, 0, W, H);
+      flash -= dt * 3;
+    }
 
     // ---- hands ----
     const gl = [];
-    const hands = (phase === 'load' ? [] : hl.detectForVideo(v, now).landmarks);
-    hands.forEach((l, i) => {
+    const hands = (phase === 'load' || !hl) ? [] : hl.detectForVideo(v, now).landmarks;
+    hands.forEach(function(l, i){
       if(i > 1) return;
       const P = l.map(toS), g = gesture(l);
       gl.push(g);
-      const tr = trails[i]; tr.push(P[8]); if(tr.length > 16) tr.shift();
+      const tr = trails[i];
+      tr.push(P[8]);
+      if(tr.length > 16) tr.shift();
       x.lineCap = 'round';
       for(let j = 1; j < tr.length; j++){
-        x.strokeStyle = `hsla(${hue},100%,70%,${j/tr.length*.8})`;
+        x.strokeStyle = 'hsla(' + hue + ',100%,70%,' + (j/tr.length*0.8) + ')';
         x.lineWidth = j/tr.length * 8;
         x.beginPath(); x.moveTo(tr[j-1][0], tr[j-1][1]); x.lineTo(tr[j][0], tr[j][1]); x.stroke();
       }
       x.beginPath();
-      for(const [a, b] of BONES){ x.moveTo(P[a][0], P[a][1]); x.lineTo(P[b][0], P[b][1]); }
-      x.strokeStyle = `hsla(${hue},100%,60%,.25)`; x.lineWidth = 10; x.stroke();
+      for(let b = 0; b < BONES.length; b++){
+        x.moveTo(P[BONES[b][0]][0], P[BONES[b][0]][1]);
+        x.lineTo(P[BONES[b][1]][0], P[BONES[b][1]][1]);
+      }
+      x.strokeStyle = 'hsla(' + hue + ',100%,60%,0.25)'; x.lineWidth = 10; x.stroke();
       x.strokeStyle = col; x.lineWidth = 3; x.stroke();
-      P.forEach((q, k) => {
-        x.beginPath(); x.arc(q[0], q[1], TIPS.includes(k) ? 7 : 4, 0, 7);
-        x.fillStyle = TIPS.includes(k) ? '#fff' : col; x.fill();
-      });
+      for(let k = 0; k < P.length; k++){
+        const isTip = TIPS.indexOf(k) >= 0;
+        x.beginPath(); x.arc(P[k][0], P[k][1], isTip ? 7 : 4, 0, 7);
+        x.fillStyle = isTip ? '#fff' : col; x.fill();
+      }
       const c9 = P[9];
       x.setLineDash([12, 10]); x.lineDashOffset = -now * 0.03;
       x.strokeStyle = col; x.lineWidth = 3;
@@ -215,31 +249,46 @@ function loop(){
     // ---- sparks ----
     x.globalCompositeOperation = 'lighter';
     for(let k = ps.length - 1; k >= 0; k--){
-      const s = ps[k]; s.x += s.vx; s.y += s.vy; s.l -= dt * 1.3;
+      const s = ps[k];
+      s.x += s.vx; s.y += s.vy; s.l -= dt * 1.3;
       if(s.l <= 0){ ps.splice(k, 1); continue; }
-      x.fillStyle = `hsla(${hue},100%,65%,${s.l})`; x.fillRect(s.x, s.y, 4, 4);
+      x.fillStyle = 'hsla(' + hue + ',100%,65%,' + s.l + ')';
+      x.fillRect(s.x, s.y, 4, 4);
     }
     x.globalCompositeOperation = 'source-over';
 
     // ---- HUD frame ----
     x.strokeStyle = col; x.lineWidth = 3; x.lineCap = 'butt';
-    const L = 44, m = 14;
-    [[m,m,1,1],[W-m,m,-1,1],[m,H-m,1,-1],[W-m,H-m,-1,-1]].forEach(([a, b, sx, sy]) => {
-      x.beginPath(); x.moveTo(a + sx*L, b); x.lineTo(a, b); x.lineTo(a, b + sy*L); x.stroke();
-    });
+    const L = 44, mg = 14;
+    const corners = [[mg,mg,1,1],[W-mg,mg,-1,1],[mg,H-mg,1,-1],[W-mg,H-mg,-1,-1]];
+    for(let k = 0; k < corners.length; k++){
+      const cr = corners[k];
+      x.beginPath();
+      x.moveTo(cr[0] + cr[2]*L, cr[1]);
+      x.lineTo(cr[0], cr[1]);
+      x.lineTo(cr[0], cr[1] + cr[3]*L);
+      x.stroke();
+    }
 
-    $('top').textContent = 'JARVIS // GESTURE CLOAK  [' + (target ? 'CLOAKED' : 'VISIBLE') + ']';
-    $('dbg').textContent = `haath: ${gl.join(',') || 'nahi dikh raha'} | mask: ${hasMask ? 'haan' : 'nahi'} (${lastMean.toFixed(2)}) | bg: ${bgOK ? 'ok' : 'nahi'} | inv: ${inv}`;
+    topEl.textContent = 'JARVIS // GESTURE CLOAK  [' + (target ? 'CLOAKED' : 'VISIBLE') + ']';
     if(phase === 'idle') say('START dabao, phir camera ke frame se hat jao');
     else if(phase === 'count'){
       say(warn || 'FRAME SE HAT JAO! Background capture ho raha hai');
-      $('big').textContent = Math.max(1, Math.ceil((countEnd - now) / 1000));
+      bigEl.textContent = Math.max(1, Math.ceil((countEnd - now) / 1000));
     } else if(phase === 'live'){
-      $('big').textContent = '';
+      bigEl.textContent = '';
       say(target ? '✌️ Peace sign rokke (ya screen tap karo) WAPAS aao' : '✌️ Peace sign 0.4 sec rokke (ya screen tap karo) GAYAB ho jao');
     }
+
+    // debug info (alag safe block)
+    try{
+      infoEl.textContent = 'haath: ' + (gl.join(',') || 'nahi dikh raha') +
+        ' | mask: ' + (hasMask ? 'haan' : 'nahi') + ' (' + lastMean.toFixed(2) + ')' +
+        ' | bg: ' + (bgOK ? 'ok' : 'nahi') + ' | inv: ' + inv;
+    } catch(e2){}
   } catch(e){
-    $('st').textContent = 'Error: ' + e.message; return;
+    stEl.textContent = 'Error: ' + e.message;
+    return;
   }
   requestAnimationFrame(loop);
 }
@@ -247,19 +296,20 @@ function loop(){
 async function main(){
   try{
     const fs = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-    const mk = async f => { try{ return await f("GPU"); } catch(e){ return await f("CPU"); } };
-    hl = await mk(dl => HandLandmarker.createFromOptions(fs, {
+    const mk = async function(f){ try{ return await f("GPU"); } catch(e){ return await f("CPU"); } };
+    hl = await mk(function(dl){ return HandLandmarker.createFromOptions(fs, {
       baseOptions: {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate: dl},
-      runningMode: "VIDEO", numHands: 2}));
-    seg = await mk(dl => ImageSegmenter.createFromOptions(fs, {
+      runningMode: "VIDEO", numHands: 2}); });
+    seg = await mk(function(dl){ return ImageSegmenter.createFromOptions(fs, {
       baseOptions: {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite", delegate: dl},
-      runningMode: "VIDEO", outputConfidenceMasks: true, outputCategoryMask: false}));
+      runningMode: "VIDEO", outputConfidenceMasks: true, outputCategoryMask: false}); });
     v.srcObject = await navigator.mediaDevices.getUserMedia({video: {facingMode: "user"}});
     await v.play();
-    phase = 'idle'; btn.style.display = 'block';
+    phase = 'idle';
+    btn.style.display = 'block';
     requestAnimationFrame(loop);
   } catch(e){
-    $('st').textContent = 'Error: ' + e.message;
+    stEl.textContent = 'Error: ' + e.message;
   }
 }
 main();
