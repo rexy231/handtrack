@@ -3,217 +3,246 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-html,body{margin:0;height:100%;background:#000;overflow:hidden}
-video,canvas{position:fixed;inset:0;width:100vw;height:100vh;transform:scaleX(-1)}
-video{object-fit:cover}
-#msg{position:fixed;top:8px;left:8px;color:#0ff;font:18px monospace;z-index:5;text-shadow:0 0 6px #000}
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:monospace}
+video{position:fixed;left:0;top:0;width:2px;height:2px;opacity:.01;pointer-events:none}
+canvas{position:fixed;inset:0;width:100vw;height:100vh}
+#scan{position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,255,255,.06) 0 1px,transparent 1px 4px),radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.7))}
+#top{position:fixed;top:12px;left:0;right:0;text-align:center;color:#0ff;font-size:18px;letter-spacing:4px;text-shadow:0 0 10px #0ff}
+#st{position:fixed;bottom:18px;left:0;right:0;text-align:center;color:#fff;font-size:19px;text-shadow:0 0 10px #0ff;padding:0 20px}
+#big{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:110px;text-shadow:0 0 30px #0ff;pointer-events:none}
+#btn{position:fixed;bottom:70px;left:50%;transform:translateX(-50%);z-index:9;padding:14px 30px;font:bold 20px monospace;color:#fff;background:rgba(0,255,255,.18);border:2px solid #0ff;border-radius:30px;display:none}
 </style>
 </head>
 <body>
-<div id="msg">Loading... (10 sec lag sakte hain)</div>
 <video id="v" autoplay playsinline muted></video>
-<canvas id="gl"></canvas>
-<canvas id="ov"></canvas>
+<canvas id="cv"></canvas>
+<div id="scan"></div>
+<div id="top">JARVIS // GESTURE CLOAK</div>
+<div id="big"></div>
+<div id="st">Models load ho rahe hain... (10-15 sec)</div>
+<button id="btn">🎬 START</button>
 <script type="module">
-import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
-import {HandLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import {HandLandmarker, ImageSegmenter, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
-const msg = document.getElementById('msg');
-const v = document.getElementById('v');
-const ov = document.getElementById('ov');
-const ox2 = ov.getContext('2d');
+const $ = id => document.getElementById(id);
+const cv = $('cv'), x = cv.getContext('2d'), v = $('v'), btn = $('btn');
+const mkc = () => document.createElement('canvas');
+const bgC = mkc(), bgx = bgC.getContext('2d');
+const lc = mkc(), lx = lc.getContext('2d');
+const maskC = mkc(), mc = maskC.getContext('2d');
 
-// ---------- Three.js setup ----------
-let W = innerWidth, H = innerHeight;
-const renderer = new THREE.WebGLRenderer({canvas: document.getElementById('gl'), alpha: true, antialias: true});
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setSize(W, H);
-const scene = new THREE.Scene();
-const cam = new THREE.OrthographicCamera(0, W, 0, -H, -1000, 1000);
-scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-sun.position.set(300, 400, 800);
-scene.add(sun);
+let W, H, phase = 'load', hl, seg;
+let bgOK = false, hasMask = false, inv = false, lastMean = 0;
+let mw = 0, mh = 0, img = null;
+let target = 0, vanish = 0, countEnd = 0, flash = 0;
+let hue = 185, fc = 0, last = performance.now();
+const hold = [0, 0], trails = [[], []], ps = [];
 
-function resize(){
+function size(){
   W = innerWidth; H = innerHeight;
-  renderer.setSize(W, H);
-  cam.right = W; cam.bottom = -H; cam.updateProjectionMatrix();
-  ov.width = W; ov.height = H;
+  for(const c of [cv, bgC, lc]){ c.width = W; c.height = H; }
+  bgOK = false;
+  if(phase === 'live'){ phase = 'idle'; target = 0; vanish = 0; btn.style.display = 'block'; }
 }
-addEventListener('resize', resize);
-resize();
+size();
+addEventListener('resize', size);
 
-const geoms = [
-  new THREE.BoxGeometry(2, 2, 2),
-  new THREE.SphereGeometry(1.2, 32, 32),
-  new THREE.ConeGeometry(1.1, 2.2, 32),
-  new THREE.TorusGeometry(1, 0.42, 16, 48),
-  new THREE.OctahedronGeometry(1.4),
-  new THREE.TorusKnotGeometry(0.8, 0.28, 100, 16)
-];
-
-let objs = [];
-function addObj(px, py, type, hue){
-  const mat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color().setHSL(hue/360, 0.9, 0.55),
-    metalness: 0.3, roughness: 0.35
-  });
-  const m = new THREE.Mesh(geoms[type % geoms.length], mat);
-  m.position.set(px, -py, 0);
-  m.userData.s = 70;
-  m.scale.setScalar(70);
-  m.rotation.set(0.5, 0.5, 0);
-  scene.add(m);
-  objs.push(m);
-}
-function resetObjs(){
-  objs.forEach(o => { scene.remove(o); o.material.dispose(); });
-  objs = [];
-  addObj(W*0.25, H/2, 0, 0);
-  addObj(W*0.5, H/2, 1, 200);
-  addObj(W*0.75, H/2, 3, 300);
-}
-resetObjs();
-
-// ---------- MediaPipe setup ----------
-const fs = await FilesetResolver.forVisionTasks(
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-const hl = await HandLandmarker.createFromOptions(fs, {
-  baseOptions: {
-    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-    delegate: "GPU"
-  },
-  runningMode: "VIDEO",
-  numHands: 2
-});
-v.srcObject = await navigator.mediaDevices.getUserMedia({video: {facingMode: "user"}});
-await v.play();
-
-// ---------- helpers ----------
+const crop = (sw, sh) => {
+  const s = Math.max(W / sw, H / sh), cw = W / s, ch = H / s;
+  return [(sw - cw) / 2, (sh - ch) / 2, cw, ch];
+};
 const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const say = t => { if($('st').textContent !== t) $('st').textContent = t; };
 
 function gesture(l){
-  const w = l[0];
-  const hs = d(w, l[9]);
+  const w = l[0], hs = d(w, l[9]);
   if(d(l[4], l[8]) < hs * 0.35) return "pinch";
-  const ext = [[8,6],[12,10],[16,14],[20,18]].map(([t,p]) => d(l[t], w) > d(l[p], w) * 1.1);
-  const n = ext.filter(Boolean).length;
+  const e = [[8,6],[12,10],[16,14],[20,18]].map(([t,p]) => d(l[t], w) > d(l[p], w) * 1.1);
+  const n = e.filter(Boolean).length;
   if(n === 0) return "fist";
   if(n === 4) return "palm";
-  if(ext[0] && !ext[1] && !ext[2] && !ext[3]) return "point";
-  if(ext[0] && ext[1] && !ext[2] && !ext[3]) return "peace";
+  if(e[0] && e[1] && !e[2] && !e[3]) return "peace";
   return "other";
 }
 
-const held = [null, null];
-const prev = [null, null];
-let lastAdd = 0;
-let typeCount = 3;
-const names = {pinch:"🤏 Pakdo", point:"☝️ Rotate", peace:"✌️ Naya object", palm:"✋ Spin", fist:"✊ Reset", other:"..."};
-
-// ---------- main loop ----------
-function loop(){
-  const vw = v.videoWidth, vh = v.videoHeight;
-  const sc = Math.max(W / vw, H / vh);
-  const dw = vw * sc, dh = vh * sc;
-  const offX = (dw - W) / 2, offY = (dh - H) / 2;
-  const toS = p => ({x: p.x * dw - offX, y: p.y * dh - offY});
-
-  ox2.clearRect(0, 0, W, H);
-  const res = hl.detectForVideo(v, performance.now());
-  const pinchPts = [null, null];
-  const gs = [];
-  let anyPalm = false;
-
-  res.landmarks.forEach((l, h) => {
-    if(h > 1) return;
-    ox2.fillStyle = "#0ff";
-    for(const p of l){
-      const s = toS(p);
-      ox2.beginPath(); ox2.arc(s.x, s.y, 4, 0, 7); ox2.fill();
+function runSeg(t){
+  seg.segmentForVideo(v, t, r => {
+    const ms = r.confidenceMasks;
+    if(!ms || !ms.length) return;
+    const m = ms[ms.length - 1], a = m.getAsFloat32Array(), n = a.length;
+    if(m.width !== mw || m.height !== mh){
+      mw = m.width; mh = m.height;
+      maskC.width = mw; maskC.height = mh;
+      img = mc.createImageData(mw, mh);
+      img.data.fill(255);
     }
-    const g = gesture(l);
-    gs.push(g);
-    const tip = toS(l[8]);
-    const a = toS(l[4]), b = toS(l[8]);
-    const pp = {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2};
-
-    if(g === "pinch"){
-      pinchPts[h] = pp;
-      if(!held[h]){
-        let best = null, bd = 1e9;
-        for(const o of objs){
-          if(held.includes(o)) continue;
-          const dist = Math.hypot(pp.x - o.position.x, pp.y + o.position.y);
-          if(dist < o.userData.s * 2 && dist < bd){ best = o; bd = dist; }
-        }
-        held[h] = best;
-      }
-      const o = held[h];
-      if(o){
-        if(prev[h]){
-          o.rotation.y += (pp.x - prev[h].x) * 0.01;
-          o.rotation.x += (pp.y - prev[h].y) * 0.01;
-        }
-        o.position.set(pp.x, -pp.y, 0);
-      }
-      prev[h] = pp;
-    } else {
-      held[h] = null;
-      if(g === "point"){
-        if(prev[h]){
-          for(const o of objs){
-            if(Math.hypot(tip.x - o.position.x, tip.y + o.position.y) < o.userData.s * 2.2){
-              o.rotation.y += (tip.x - prev[h].x) * 0.02;
-              o.rotation.x += (tip.y - prev[h].y) * 0.02;
-            }
-          }
-        }
-        prev[h] = tip;
-        ox2.strokeStyle = "#ff0"; ox2.lineWidth = 3;
-        ox2.beginPath(); ox2.arc(tip.x, tip.y, 14, 0, 7); ox2.stroke();
-      } else {
-        prev[h] = null;
-      }
+    const dd = img.data; let s = 0;
+    for(let i = 0; i < n; i++){
+      const q = a[i]; s += q;
+      let p = ((inv ? 1 - q : q) - 0.4) * 4;
+      dd[i*4+3] = p < 0 ? 0 : p > 1 ? 255 : p * 255;
     }
-
-    if(g === "palm") anyPalm = true;
-    if(g === "fist") resetObjs();
-    if(g === "peace" && performance.now() - lastAdd > 800 && objs.length < 10){
-      addObj(tip.x, tip.y, typeCount++, Math.random() * 360);
-      lastAdd = performance.now();
-    }
+    lastMean = s / n;
+    mc.putImageData(img, 0, 0);
+    hasMask = true;
   });
+}
 
-  for(let h = res.landmarks.length; h < 2; h++){ held[h] = null; prev[h] = null; }
+btn.onclick = () => {
+  if(phase === 'load') return;
+  phase = 'count'; countEnd = performance.now() + 5000;
+  target = 0; vanish = 0; hasMask = false;
+  btn.style.display = 'none';
+};
 
-  // dono haath se pinch = scale
-  if(pinchPts[0] && pinchPts[1]){
-    const o = held[0] || held[1];
-    if(o){
-      const dist = Math.hypot(pinchPts[0].x - pinchPts[1].x, pinchPts[0].y - pinchPts[1].y);
-      o.userData.s = Math.max(30, Math.min(300, dist / 2));
-      o.scale.setScalar(o.userData.s);
+function spark(bxp){
+  for(let k = 0; k < 8; k++) ps.push({x: bxp, y: Math.random()*H, vx: (Math.random()-.5)*4, vy: (Math.random()-.5)*4 - 1, l: 1});
+  if(ps.length > 500) ps.splice(0, ps.length - 500);
+}
+
+const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+const TIPS = [4, 8, 12, 16, 20];
+
+function loop(){
+  try{
+    const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000);
+    last = now; fc++;
+    const vw = v.videoWidth, vh = v.videoHeight, c = crop(vw, vh);
+    const toS = p => [W - ((p.x*vw - c[0]) / c[2] * W), (p.y*vh - c[1]) / c[3] * H];
+
+    hue += ((target ? 290 : 185) - hue) * 0.08;
+    const col = `hsl(${hue},100%,62%)`;
+    vanish = Math.max(0, Math.min(1, vanish + (target ? 1 : -1) * dt / 1.2));
+    const p = vanish * vanish * (3 - 2 * vanish);
+
+    if(phase === 'count' && now >= countEnd){
+      bgx.drawImage(v, c[0], c[1], c[2], c[3], 0, 0, W, H);
+      inv = lastMean > 0.5; bgOK = true; hasMask = false; phase = 'live';
+      btn.textContent = '🔄 Background dobara lo'; btn.style.display = 'block';
     }
-  }
+    if((phase === 'count' || target || vanish > 0) && fc % 3 === 0) runSeg(now);
 
-  const t = performance.now() * 0.001;
-  for(const o of objs){
-    if(anyPalm){
-      o.rotation.y += 0.04; o.rotation.x += 0.02;
-      o.material.color.offsetHSL(0.004, 0, 0);
-    } else if(!held.includes(o)){
-      o.rotation.y += 0.004; // halka sa idle rotation
+    // ---- video + cloak ----
+    x.save(); x.translate(W, 0); x.scale(-1, 1);
+    x.drawImage(v, c[0], c[1], c[2], c[3], 0, 0, W, H);
+    if(vanish > 0.001 && bgOK && hasMask){
+      lx.globalCompositeOperation = 'copy'; lx.drawImage(bgC, 0, 0);
+      lx.globalCompositeOperation = 'destination-in';
+      const mcr = crop(mw, mh);
+      lx.drawImage(maskC, mcr[0], mcr[1], mcr[2], mcr[3], 0, 0, W, H);
+      lx.globalCompositeOperation = 'source-over';
+      x.save(); x.beginPath(); x.rect(W - W*p, 0, W*p, H); x.clip();
+      x.drawImage(lc, 0, 0); x.restore();
     }
-    o.material.emissive.setScalar(held.includes(o) ? 0.25 : 0);
-  }
+    x.restore();
 
-  renderer.render(scene, cam);
-  msg.textContent = gs.length ? gs.map(g => names[g]).join("  |  ") : "Haath dikhao";
+    // ---- scanner beam ----
+    if(vanish > 0.001 && vanish < 0.999){
+      const bxp = W * p;
+      const g2 = x.createLinearGradient(bxp-30, 0, bxp+30, 0);
+      g2.addColorStop(0, 'transparent'); g2.addColorStop(.5, col); g2.addColorStop(1, 'transparent');
+      x.fillStyle = g2; x.fillRect(bxp-30, 0, 60, H);
+      spark(bxp);
+    }
+    if(flash > 0){ x.fillStyle = `rgba(255,255,255,${flash*.35})`; x.fillRect(0, 0, W, H); flash -= dt * 3; }
+
+    // ---- hands ----
+    const hands = (phase === 'load' ? [] : hl.detectForVideo(v, now).landmarks);
+    hands.forEach((l, i) => {
+      if(i > 1) return;
+      const P = l.map(toS), g = gesture(l);
+      const tr = trails[i]; tr.push(P[8]); if(tr.length > 16) tr.shift();
+      x.lineCap = 'round';
+      for(let j = 1; j < tr.length; j++){
+        x.strokeStyle = `hsla(${hue},100%,70%,${j/tr.length*.8})`;
+        x.lineWidth = j/tr.length * 8;
+        x.beginPath(); x.moveTo(tr[j-1][0], tr[j-1][1]); x.lineTo(tr[j][0], tr[j][1]); x.stroke();
+      }
+      x.beginPath();
+      for(const [a, b] of BONES){ x.moveTo(P[a][0], P[a][1]); x.lineTo(P[b][0], P[b][1]); }
+      x.strokeStyle = `hsla(${hue},100%,60%,.25)`; x.lineWidth = 10; x.stroke();
+      x.strokeStyle = col; x.lineWidth = 3; x.stroke();
+      P.forEach((q, k) => {
+        x.beginPath(); x.arc(q[0], q[1], TIPS.includes(k) ? 7 : 4, 0, 7);
+        x.fillStyle = TIPS.includes(k) ? '#fff' : col; x.fill();
+      });
+      const c9 = P[9];
+      x.setLineDash([12, 10]); x.lineDashOffset = -now * 0.03;
+      x.strokeStyle = col; x.lineWidth = 3;
+      x.beginPath(); x.arc(c9[0], c9[1], 85, 0, 7); x.stroke();
+      x.setLineDash([]);
+
+      // peace hold -> toggle
+      let prog = 0;
+      const allowed = vanish <= 0.001 || vanish >= 0.999;
+      if(g !== 'peace') hold[i] = 0;
+      else if(phase === 'live' && hold[i] !== -1){
+        if(!allowed) hold[i] = 0;
+        else {
+          if(hold[i] === 0) hold[i] = now;
+          prog = Math.min(1, (now - hold[i]) / 500);
+          if(prog >= 1){ target = 1 - target; flash = 1; hold[i] = -1; }
+        }
+      }
+      if(prog > 0){
+        x.strokeStyle = '#fff'; x.lineWidth = 7;
+        x.beginPath(); x.arc(c9[0], c9[1], 100, -Math.PI/2, -Math.PI/2 + Math.PI*2*prog); x.stroke();
+        x.font = 'bold 20px monospace'; x.fillStyle = '#fff'; x.textAlign = 'center';
+        x.fillText('✌️ ' + Math.round(prog*100) + '%', c9[0], c9[1] - 115);
+      }
+    });
+    for(let h = hands.length; h < 2; h++){ trails[h] = []; hold[h] = 0; }
+
+    // ---- sparks ----
+    x.globalCompositeOperation = 'lighter';
+    for(let k = ps.length - 1; k >= 0; k--){
+      const s = ps[k]; s.x += s.vx; s.y += s.vy; s.l -= dt * 1.3;
+      if(s.l <= 0){ ps.splice(k, 1); continue; }
+      x.fillStyle = `hsla(${hue},100%,65%,${s.l})`; x.fillRect(s.x, s.y, 4, 4);
+    }
+    x.globalCompositeOperation = 'source-over';
+
+    // ---- HUD frame ----
+    x.strokeStyle = col; x.lineWidth = 3; x.lineCap = 'butt';
+    const L = 44, m = 14;
+    [[m,m,1,1],[W-m,m,-1,1],[m,H-m,1,-1],[W-m,H-m,-1,-1]].forEach(([a, b, sx, sy]) => {
+      x.beginPath(); x.moveTo(a + sx*L, b); x.lineTo(a, b); x.lineTo(a, b + sy*L); x.stroke();
+    });
+
+    $('top').textContent = 'JARVIS // GESTURE CLOAK  [' + (target ? 'CLOAKED' : 'VISIBLE') + ']';
+    if(phase === 'idle') say('START dabao, phir camera ke frame se hat jao');
+    else if(phase === 'count'){
+      say('FRAME SE HAT JAO! Background capture ho raha hai');
+      $('big').textContent = Math.max(1, Math.ceil((countEnd - now) / 1000));
+    } else if(phase === 'live'){
+      $('big').textContent = '';
+      say(target ? '✌️ Peace sign rokke WAPAS aao' : '✌️ Peace sign 0.5 sec rokke GAYAB ho jao');
+    }
+  } catch(e){
+    $('st').textContent = 'Error: ' + e.message; return;
+  }
   requestAnimationFrame(loop);
 }
-loop();
+
+async function main(){
+  try{
+    const fs = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+    const mk = async f => { try{ return await f("GPU"); } catch(e){ return await f("CPU"); } };
+    hl = await mk(dl => HandLandmarker.createFromOptions(fs, {
+      baseOptions: {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate: dl},
+      runningMode: "VIDEO", numHands: 2}));
+    seg = await mk(dl => ImageSegmenter.createFromOptions(fs, {
+      baseOptions: {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite", delegate: dl},
+      runningMode: "VIDEO", outputConfidenceMasks: true, outputCategoryMask: false}));
+    v.srcObject = await navigator.mediaDevices.getUserMedia({video: {facingMode: "user"}});
+    await v.play();
+    phase = 'idle'; btn.style.display = 'block';
+    requestAnimationFrame(loop);
+  } catch(e){
+    $('st').textContent = 'Error: ' + e.message;
+  }
+}
+main();
 </script>
 </body>
 </html>
